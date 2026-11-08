@@ -1,172 +1,162 @@
-# 📡 Free Mobile – Automated Customer Complaint Analysis with LLMs
+# Classifying Free Mobile customer complaints on X with an LLM
 
-> Detect, classify and prioritize customer complaints posted on X (Twitter) using a local LLM (Mistral-7B), then turn them into actionable KPIs for customer service teams.
+This was our final project for the Master Data & AI at HETIC, from May to November 2025, done in a team of 5 on a Free Mobile use case.
 
-![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
-![Mistral](https://img.shields.io/badge/LLM-Mistral--7B-FA520F)
-![Ollama](https://img.shields.io/badge/Ollama-local%20inference-000000?logo=ollama&logoColor=white)
-![Streamlit](https://img.shields.io/badge/Streamlit-dashboard-FF4B4B?logo=streamlit&logoColor=white)
-![n8n](https://img.shields.io/badge/n8n-orchestration-EA4B71?logo=n8n&logoColor=white)
-![scikit-learn](https://img.shields.io/badge/scikit--learn-evaluation-F7931E?logo=scikitlearn&logoColor=white)
+Free's customer service account on X (Twitter) receives a lot of messages, and many customers use it as an emergency channel when their internet or mobile line stops working. When we analysed the data, the average response time was more than 5 days. Our goal was to build a proof of concept that finds the real complaints automatically, understands what they are about and how urgent they are, and sends them to the right place: a chatbot for simple requests, a human agent for the rest.
 
-Master's capstone project (Master Data & AI, HETIC Paris), May – Nov. 2025, built by a team of 5 for the **Free Mobile** use case.
+I was the Business Analyst / Product Owner of the project. On the technical side, I wrote the LLM classification of the whole dataset (notebook and prompt), the Streamlit dashboard and one of the benchmark scripts. The work of the rest of the team is credited at the end of this page.
 
-![Dashboard overview](docs/images/dashboard_overview.png)
+![Dashboard](docs/images/dashboard_overview.png)
 
----
+## The problem in numbers
 
-## 🎯 The problem
+We worked on 3,044 tweets sent to Free's support account between December 2020 and June 2025.
 
-Free's customer service account on X is used by customers as an **emergency channel**: outages, fiber issues, billing problems… But answers come late.
-
-| Key figure (dataset Dec. 2020 – June 2025) | Value |
+| | Value |
 |---|---|
-| Tweets analyzed | **3,044** |
-| Customer service complaints detected | **2,839 (93.3%)** |
-| High-urgency complaints | **68.7%** |
-| Negative sentiment among complaints | **98.4%** |
-| Average response time of Free's customer service | **5 days 15 h** (median 4 days 19 h) |
+| Tweets analysed | 3,044 |
+| Real customer service complaints | 2,839 (93.3%) |
+| High urgency complaints | 68.7% |
+| Negative complaints | 98.4% |
+| Average response time from Free | 5 days 15 hours |
+| Median response time | 4 days 19 hours |
 
-**Goal:** automatically identify real complaints, understand what they are about and how urgent they are, and route them to the right answer (chatbot or human agent).
+The complaints are mostly about fibre and network outages, SIM cards and billing, and they come in big peaks when there is an outage, often in the evening and at weekends.
 
----
-
-## 🏗️ Architecture
+## How the solution works
 
 ```mermaid
 flowchart LR
-    A[X / Twitter API<br/>or CSV export] --> B[Cleaning<br/>URLs, emails, phones,<br/>dedup, normalization]
-    B --> C[LLM classification<br/>Mistral-7B via Ollama<br/>few-shot retrieval]
-    C --> D[Structured JSON<br/>is_claim · topics · sentiment<br/>urgency · incident · confidence]
-    D --> E[Streamlit dashboard<br/>Manager · Analyst · Agent]
+    A[Tweets: X API or CSV export] --> B[Cleaning]
+    B --> C[LLM classification<br/>Mistral-7B]
+    C --> D[Structured JSON]
+    D --> E[Streamlit dashboard]
     D --> F{Complaint?}
-    F -- yes --> G[Auto-reply on X<br/>+ chatbot link]
-    G --> H[Chatbot<br/>SAV knowledge base]
-    H -- unresolved --> I[Ticket → human agent]
+    F -- yes --> G[Automatic reply on X<br/>with a link to the chatbot]
+    G --> H[Chatbot based on<br/>a customer service knowledge base]
+    H -- not solved --> I[Ticket for a human agent]
 ```
 
-The whole flow is orchestrated with **n8n** (collection, cleaning, inference, storage, replies), with a **hybrid LLM setup**: Mistral via API in normal mode, and a local Mistral-7B with **Ollama** as a fallback during traffic peaks or API outages.
+The whole flow is orchestrated with n8n: collecting the tweets, cleaning them, calling the model, storing the results and sending the replies. The model runs through the Mistral API in normal mode, and locally with Ollama as a fallback when the API is down or during traffic peaks.
 
----
+### 1. Cleaning
 
-## 🧠 LLM classification
+The cleaning notebook ([`cleaning/clean.ipynb`](cleaning/clean.ipynb)) removes duplicates, URLs, HTML entities and hashtags, normalises the text and prepares a version of each tweet ready to be sent to the model.
 
-Each tweet is sent to Mistral-7B with a system prompt and few-shot examples ([`classification/prompt_tweets_free.txt`](classification/prompt_tweets_free.txt)). The model must answer with **one strict JSON line**:
+### 2. Classification with the LLM
+
+Each tweet is sent to Mistral-7B with a system prompt and a few annotated examples ([`classification/prompt_tweets_free.txt`](classification/prompt_tweets_free.txt)). The model must answer with a single JSON line:
 
 ```json
 {"is_claim": 1, "topics": ["fibre"], "sentiment": "neg", "urgence": "haute", "incident": "incident_reseau", "confidence": 0.9}
 ```
 
-- **Topics:** fibre, DSL, wifi, TV, mobile, billing, activation, cancellation, other (multi-label)
-- **Incident types:** network incident, billing, delivery, information, customer service process, other
-- **Robustness:** HTTP retries with backoff, tolerant JSON parsing, label normalization, error flag per row
-
----
-
-## 🧪 Benchmark of prompting strategies
-
-We compared 5 prompting strategies on a hand-annotated set of **300 tweets** (stratified split, test set of 30 tweets), measuring quality with scikit-learn (per-class F1, macro-F1) and performance with latency percentiles (p50 / p95) and token counts.
-
-| Strategy | Macro-F1 | F1 neg / neu / pos | Prompt tokens |
-|---|---|---|---|
-| Few-shot 6 | 0.426 | 0.943 / 0.333 / 0.000 | 848 |
-| Few-shot 12 | 0.480 | 0.941 / 0.500 / 0.000 | 1,449 |
-| Few-shot 24 | 0.542 | 0.960 / 0.667 / 0.000 | 2,667 |
-| System prompt + 3-shot | 0.511 | 0.962 / 0.571 / 0.000 | 1,004 |
-| **Few-shot retrieval (k=12, MMR)** | **0.903** | **0.960 / 0.750 / 1.000** | 1,450 |
-
-**Takeaways**
-- Fixed few-shot examples never detected the rare **positive** class (9 / 300 tweets).
-- **Semantic retrieval** (Sentence-Transformers `all-MiniLM-L6-v2` embeddings + **Maximal Marginal Relevance** to balance relevance and diversity) picks the most useful examples for each tweet and lifts macro-F1 from **0.54 to 0.90**, with a shorter prompt than the 24-shot version → retained for the POC.
-- Trade-off: higher latency on a CPU laptop (embedding computation). Planned optimizations: embedding cache, FAISS index, GPU serving.
-
-> ⚠️ The test set is small (30 tweets, 1 positive): these results validate the approach for a POC, not a production-grade model.
-
-Scripts and raw outputs: [`benchmarks/`](benchmarks/).
-
----
-
-## 📊 Dashboard
-
-A Streamlit dashboard with **3 user profiles** (Manager, Data Analyst, Customer Service Agent) and filters by period, topic, sentiment, incident type and urgency.
-
-| Urgency & top incidents | Themes & response time |
+| Field | Values |
 |---|---|
-| ![Urgency](docs/images/dashboard_urgency_incidents.png) | ![Themes](docs/images/dashboard_themes_response_time.png) |
+| `is_claim` | 1 if the tweet is a real complaint, 0 otherwise |
+| `topics` | fibre, DSL, wifi, TV, mobile, billing, activation, cancellation, other (several are possible) |
+| `sentiment` | negative, neutral, positive |
+| `urgence` | low, medium, high |
+| `incident` | network incident, billing, delivery, information request, customer service process, other |
+| `confidence` | between 0 and 1 |
+
+Getting a clean JSON for 3,000 tweets took some work. The notebook ([`classification/classification.ipynb`](classification/classification.ipynb)) retries the calls that fail with a growing delay, parses the answer in a tolerant way when the model adds text around the JSON, normalises the labels (accents, upper and lower case) and flags the rows that still fail so they can be checked by hand.
+
+### 3. Choosing the best prompting strategy
+
+To choose how to prompt the model, we annotated 300 tweets by hand, split them in a stratified way and compared 5 strategies on the test set (30 tweets). We measured the quality with scikit-learn (F1 score per class and macro-F1), the latency (median and 95th percentile) and the number of tokens in the prompt.
+
+| Strategy | Macro-F1 | F1 negative / neutral / positive | Prompt tokens |
+|---|---|---|---|
+| Few-shot, 6 fixed examples | 0.426 | 0.943 / 0.333 / 0.000 | 848 |
+| Few-shot, 12 fixed examples | 0.480 | 0.941 / 0.500 / 0.000 | 1,449 |
+| Few-shot, 24 fixed examples | 0.542 | 0.960 / 0.667 / 0.000 | 2,667 |
+| System prompt + 3 examples | 0.511 | 0.962 / 0.571 / 0.000 | 1,004 |
+| Retrieval of the 12 closest examples (MMR) | 0.903 | 0.960 / 0.750 / 1.000 | 1,450 |
+
+What we learned:
+- With fixed examples, the model never found the positive tweets. There are only 9 of them out of 300, so they were almost never in the examples.
+- Adding more fixed examples helps a bit but makes the prompt much longer and slower.
+- Selecting, for each tweet, the 12 most similar annotated examples fixed the problem. The tweets are turned into vectors with Sentence-Transformers (`all-MiniLM-L6-v2`), and Maximal Marginal Relevance (MMR) picks examples that are close to the tweet but not all identical. The macro-F1 went from 0.54 to 0.90 with a prompt shorter than the 24-example version, so we kept this strategy.
+- The downside is the latency on a laptop CPU, because of the embeddings. The next steps would be to cache the embeddings, use a FAISS index and serve the model on a GPU.
+
+The test set is small (30 tweets, only 1 positive). These numbers validate the approach for a proof of concept, not a model ready for production.
+
+The scripts and a screenshot of each run are in [`benchmarks/`](benchmarks/).
+
+### 4. Dashboard
+
+The Streamlit dashboard ([`dashboard/app.py`](dashboard/app.py)) is built for 3 profiles: manager, data analyst and customer service agent. It can be filtered by period, topic, sentiment, incident type and urgency, and shows:
+- the key figures: number of tweets, share of complaints, share of urgent and negative messages
+- the split by sentiment and by urgency
+- the most frequent incidents
+- the volume of messages per day and per week, to see the outage peaks
+- a map of the topics and a word cloud of the complaints
+- the response time of the customer service
+
+| Urgency and top incidents | Topics and response time |
+|---|---|
+| ![Urgency](docs/images/dashboard_urgency_incidents.png) | ![Topics](docs/images/dashboard_themes_response_time.png) |
 
 ![Word cloud](docs/images/dashboard_wordcloud.png)
 
----
+## Our recommendations to Free
 
-## 💡 Business recommendations
+1. **A chatbot on X** for simple requests such as the status of an outage, restarting the Freebox or checking a line, with a goal of answering in less than an hour instead of 5 days.
+2. **Automatic prioritisation** of urgent tweets by the LLM, and routing to the right team.
+3. **A "network crisis" team** with longer hours, because outages create big peaks in the evening and at weekends.
+4. **A live FAQ** built from the most frequent complaint topics (fibre, SIM, general outages).
 
-1. **Twitter chatbot** for simple requests (outage status, Freebox restart, line status): target response time **under 1 hour** vs 5 days today.
-2. **Automatic prioritization** of urgent tweets with the LLM and routing to the right team.
-3. **"Network crisis" task force** with extended hours: outages create massive peaks, often in the evening and at weekends.
-4. **Real-time FAQ** built from the most frequent complaint topics (fiber, SIM, general outages).
+## Privacy
 
----
+The data published here is anonymised with [`scripts/anonymize_data.py`](scripts/anonymize_data.py):
+- the tweet IDs are replaced by salted hashes, so the link between a customer tweet and Free's answer still works
+- user names, user IDs, profile pictures and URLs are removed
+- mentions of private people are replaced by `@user`, while brands and institutions (Free, Orange, Arcep...) are kept
+- emails and phone numbers are masked
 
-## 🔒 Data privacy (GDPR)
-
-The published datasets are **anonymized** with [`scripts/anonymize_data.py`](scripts/anonymize_data.py):
-- tweet IDs replaced by salted hashes (joins between customer tweets and Free's replies still work);
-- user handles, names, user IDs, profile pictures and URLs removed;
-- mentions of private individuals replaced by `@user`, e-mails and phone numbers masked.
-
----
-
-## 📁 Repository structure
+## Repository structure
 
 ```
 free-customer-care-llm/
-├── cleaning/            # Tweet cleaning notebook (URLs, HTML, hashtags, dedup)
-├── classification/      # LLM classification notebook + system prompt
-├── benchmarks/          # Prompting strategy evaluation scripts + results
-├── dashboard/           # Streamlit app
-├── data/                # Anonymized datasets
-├── scripts/             # Data anonymization
-└── docs/images/         # Screenshots
+├── cleaning/          cleaning notebook
+├── classification/    LLM classification notebook and system prompt
+├── benchmarks/        evaluation scripts of the 5 strategies and their results
+├── dashboard/         Streamlit app
+├── data/              anonymised datasets (raw, cleaned, classified, Free's replies)
+├── scripts/           anonymisation script
+└── docs/images/       screenshots
 ```
 
----
-
-## ▶️ Run it locally
+## Run it
 
 ```bash
 git clone https://github.com/Yassinech12/free-customer-care-llm.git
 cd free-customer-care-llm
 pip install -r requirements.txt
 
-# Dashboard (loads the anonymized classified dataset by default)
+# the dashboard loads the anonymised classified dataset by default
 streamlit run dashboard/app.py
 ```
 
-To re-run the LLM classification, install [Ollama](https://ollama.com), pull the model and open the notebook:
+To run the classification again, install [Ollama](https://ollama.com), download the model with `ollama pull mistral`, then open `classification/classification.ipynb`. The benchmark scripts need the annotated split files, which are not included in this repository.
 
-```bash
-ollama pull mistral
-jupyter notebook classification/classification.ipynb
-```
+## Tech stack
 
-> The benchmark scripts expect the annotated split files (`data/test_split_full.csv`), which are not included in this repository.
+Python, Pandas, Mistral-7B, Ollama, Sentence-Transformers, scikit-learn, Streamlit, Plotly, n8n, FastAPI. We worked in Scrum with 2-week sprints, and used Trello, GitHub, Notion and Microsoft Teams.
 
----
+## The team
 
-## 👥 Team & contributions
-
-| Member | Role | Main contributions |
+| Member | Role | Main work |
 |---|---|---|
-| **Mohamed Yassine CHARIT** | Business Analyst / Product Owner | Product vision and backlog, **LLM classification of the full dataset** (notebook + prompt), **Streamlit dashboard**, system-prompt + 3-shot benchmark, data analysis and business recommendations |
-| Mohammed Taha OUAAZZI | Project Manager | Planning, coordination, Scrum ceremonies |
-| Kouassi Anderson EHOUSSOU | Solution Architect | Technical architecture, Mistral-7B integration |
-| Houssam NAJIH | AI & Data Expert | Data collection and cleaning, FastAPI, n8n integration |
-| Hamza AJERMOUN | Lead Developer | LLM benchmarks (few-shot, retrieval), infrastructure |
+| Mohamed Yassine CHARIT | Business Analyst / Product Owner | product vision and backlog, LLM classification of the full dataset (notebook and prompt), Streamlit dashboard, system prompt + 3 examples benchmark, data analysis and recommendations |
+| Mohammed Taha OUAAZZI | Project Manager | planning, coordination, Scrum ceremonies |
+| Kouassi Anderson EHOUSSOU | Solution Architect | technical architecture, Mistral-7B integration |
+| Houssam NAJIH | AI and Data | data collection and cleaning, FastAPI, n8n integration |
+| Hamza AJERMOUN | Lead Developer | few-shot and retrieval benchmarks, infrastructure |
 
 Original team repository: [Houssam-Najih/X_Automation_Project](https://github.com/Houssam-Najih/X_Automation_Project)
 
-**Methodology:** Agile Scrum (2-week sprints) · Trello · GitHub · Notion · Microsoft Teams
-
 ---
 
-📫 **Contact:** [LinkedIn](https://www.linkedin.com/in/yassine-charit/) · Yassine12charit@gmail.com
+Yassine CHARIT · [LinkedIn](https://www.linkedin.com/in/yassine-charit/) · [GitHub](https://github.com/Yassinech12)
